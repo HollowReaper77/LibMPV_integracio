@@ -7,7 +7,15 @@ public class MpvWrapper : MonoBehaviour
 {
     private const string MpvLibName = "mpv";
 
-    // --- 1. ALAPVETŐ MPV FÜGGVÉNYEK (C könyvtár importálása) ---
+    // --- C STRUKTÚRA A PARAMÉTEREKHEZ ---
+    [StructLayout(LayoutKind.Sequential)]
+    public struct mpv_render_param
+    {
+        public int type;
+        public IntPtr data;
+    }
+
+    // --- ALAP FÜGGVÉNYEK ---
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr mpv_create();
 
@@ -17,24 +25,27 @@ public class MpvWrapper : MonoBehaviour
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void mpv_terminate_destroy(IntPtr ctx);
 
-    // --- 2. RENDERELŐ (KÉP-KIMÁSOLÓ) FÜGGVÉNYEK ---
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_render_context_create(out IntPtr res, IntPtr mpv, IntPtr[] param);
+    private static extern int mpv_set_option_string(IntPtr ctx, [MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.LPUTF8Str)] string data);
+
+    [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int mpv_command_string(IntPtr ctx, [MarshalAs(UnmanagedType.LPUTF8Str)] string args);
+
+    // --- RENDERELŐ FÜGGVÉNYEK (Itt már a saját struktúránkat használjuk) ---
+    [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int mpv_render_context_create(out IntPtr res, IntPtr mpv, mpv_render_param[] param);
 
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int mpv_render_context_update(IntPtr ctx);
 
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_render_context_render(IntPtr ctx, IntPtr[] param);
+    private static extern int mpv_render_context_render(IntPtr ctx, mpv_render_param[] param);
 
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void mpv_render_context_free(IntPtr ctx);
-    
-    [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_command_string(IntPtr ctx, [MarshalAs(UnmanagedType.LPUTF8Str)] string args);
 
     [Header("Unity Megjelenítés")]
-    public RawImage videoScreen; // Ide kell behúzni a UI réteget az Inspectorban
+    public RawImage videoScreen; 
     
     [Header("4K Memóriakezelés")]
     private const int VideoWidth = 3840;
@@ -43,54 +54,46 @@ public class MpvWrapper : MonoBehaviour
     private Texture2D videoTexture;
     private IntPtr mpvHandle;
     private IntPtr renderContext;
-    private byte[] frameBuffer; // A 33 MB-os állandó tárolónk
+    private byte[] frameBuffer;
 
     void Start()
     {
-        // 1. MPV mag elindítása
         mpvHandle = mpv_create();
-        if (mpvHandle == IntPtr.Zero)
-        {
-            Debug.LogError("Kritikus hiba: Nem találom a libmpv.so fájlt a Plugins mappában!");
-            return;
-        }
+        if (mpvHandle == IntPtr.Zero) return;
+
+        // 1. MEGTILTJUK A SAJÁT ABLAKOT! (Átirányítjuk a Render API-ba)
+        mpv_set_option_string(mpvHandle, "vo", "libmpv");
 
         mpv_initialize(mpvHandle);
-        Debug.Log("Siker: Az mpv mag betöltve és fut!");
-
-        // 2. A 4K Textúra és a fizikai memóriatároló lefoglalása
+        
         videoTexture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.BGRA32, false);
         frameBuffer = new byte[VideoWidth * VideoHeight * 4];
 
-        // Rákötjük a textúrát a Unity 2D-s vásznára
-        if (videoScreen != null)
+        if (videoScreen != null) videoScreen.texture = videoTexture;
+
+        // 2. Szoftveres renderelő környezet kérése ("sw")
+        IntPtr apiTypePtr = Marshal.StringToHGlobalAnsi("sw");
+        mpv_render_param[] createParams = new mpv_render_param[]
         {
-            videoScreen.texture = videoTexture;
-        }
-
-        // 3. Renderelő környezet inicializálása (Itt mondjuk meg a C kódnak, hogy szoftveres/memóriába rajzolást kérünk)
-        // (A GitHub-os wrapperből ide jön majd egy paramétertömb, egyelőre null-lal indítjuk a hidat)
-        mpv_render_context_create(out renderContext, mpvHandle, null);
+            new mpv_render_param { type = 1, data = apiTypePtr }, // 1 = MPV_RENDER_PARAM_API_TYPE
+            new mpv_render_param { type = 0, data = IntPtr.Zero } // C-szabvány lezáró nulla
+        };
         
-        // A videó abszolút elérési útja
-        string videoPath = "/home/hollowreaper/Letöltések/welcome.mp4";
+        mpv_render_context_create(out renderContext, mpvHandle, createParams);
+        Marshal.FreeHGlobal(apiTypePtr); // Memóriatakarítás
 
-        // Kiadjuk a lejátszási parancsot a C motornak
+        // 3. A videó elindítása
+        string videoPath = "/home/hollowreaper/Letöltések/welcome.mp4";
         mpv_command_string(mpvHandle, $"loadfile {videoPath}");
     }
 
     void Update()
     {
-        // Ha valamiért leállt a mag, nem csinálunk semmit
         if (mpvHandle == IntPtr.Zero || renderContext == IntPtr.Zero) return;
 
-        // 1. Megkérdezzük az mpv-t: Van új, kirajzolásra kész 4K képkocka?
         if (mpv_render_context_update(renderContext) != 0)
         {
-            // 2. Belemásoltatjuk a C kóddal a pixeleket a mi frameBuffer tömbünkbe
             GetFramePixelsFromMpv();
-            
-            // 3. Rátöltjük a friss adatot a Unity textúrájára, és beküldjük a videókártyának
             videoTexture.LoadRawTextureData(frameBuffer);
             videoTexture.Apply();
         }
@@ -98,16 +101,32 @@ public class MpvWrapper : MonoBehaviour
 
     private void GetFramePixelsFromMpv()
     {
-        // "Lehorgonyozzuk" a tömböt a memóriában, hogy a Unity ne piszkáljon bele, amíg a C kód dolgozik
         GCHandle bufferHandle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
         IntPtr bufferPtr = bufferHandle.AddrOfPinnedObject();
 
+        // C paraméterek memóriaterületének előkészítése
+        int[] size = new int[] { VideoWidth, VideoHeight };
+        IntPtr sizePtr = Marshal.AllocHGlobal(sizeof(int) * 2);
+        Marshal.Copy(size, 0, sizePtr, 2);
+
+        IntPtr formatPtr = Marshal.StringToHGlobalAnsi("bgra");
+
+        IntPtr stridePtr = Marshal.AllocHGlobal(IntPtr.Size);
+        Marshal.WriteIntPtr(stridePtr, (IntPtr)(VideoWidth * 4));
+
         try
         {
-            // --- ITT FOG MEGTÖRTÉNNI A CSODA ---
-            // A GitHub-os Mpv.NET wrapperből átemelt paraméter-struktúrák (felbontás, színkód, memória mutató)
-            // ide fognak bekerülni, majd meghívják a natív renderelést:
-            // mpv_render_context_render(renderContext, renderParams);
+            // A pontos utasítás a C motornak: Mekkora, milyen formátumú, és hova kérjük!
+            mpv_render_param[] renderParams = new mpv_render_param[]
+            {
+                new mpv_render_param { type = 5, data = sizePtr },    // 5 = SW_SIZE
+                new mpv_render_param { type = 6, data = formatPtr },  // 6 = SW_FORMAT
+                new mpv_render_param { type = 7, data = stridePtr },  // 7 = SW_STRIDE
+                new mpv_render_param { type = 8, data = bufferPtr },  // 8 = SW_POINTER (ide folyik be a kép!)
+                new mpv_render_param { type = 0, data = IntPtr.Zero }
+            };
+
+            mpv_render_context_render(renderContext, renderParams);
         }
         catch (Exception ex)
         {
@@ -115,22 +134,17 @@ public class MpvWrapper : MonoBehaviour
         }
         finally
         {
-            // Nagyon fontos: Feloldjuk a horgonyt, különben pillanatok alatt elfogy a Kiosk memóriája!
+            // Horgonyok és memóriaszemét eltakarítása
             bufferHandle.Free();
+            Marshal.FreeHGlobal(sizePtr);
+            Marshal.FreeHGlobal(formatPtr);
+            Marshal.FreeHGlobal(stridePtr);
         }
     }
 
     void OnDestroy()
     {
-        // Szabályos kilépés: mindent bezárunk és takarítunk magunk után
-        if (renderContext != IntPtr.Zero)
-        {
-            mpv_render_context_free(renderContext);
-        }
-        
-        if (mpvHandle != IntPtr.Zero)
-        {
-            mpv_terminate_destroy(mpvHandle);
-        }
+        if (renderContext != IntPtr.Zero) mpv_render_context_free(renderContext);
+        if (mpvHandle != IntPtr.Zero) mpv_terminate_destroy(mpvHandle);
     }
 }
