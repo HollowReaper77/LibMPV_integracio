@@ -5,7 +5,7 @@ using UnityEngine.UI;
 
 public class MpvWrapper : MonoBehaviour
 {
-    private const string MpvLibName = "mpv";
+    private const string MpvLibName = "libmpv.so.2";
 
     [StructLayout(LayoutKind.Sequential)]
     public struct mpv_render_param { public int type; public IntPtr data; }
@@ -31,7 +31,7 @@ public class MpvWrapper : MonoBehaviour
 
     [Header("Beállítások")]
     public RawImage videoScreen; 
-    public string videoPath = "/godzie/assets/default/welcome.mp4";
+    public string videoPath = "/godzie/assets/default/backgrounds/welcome.mp4";
 
     private const int VideoWidth = 3840;
     private const int VideoHeight = 2160;
@@ -67,8 +67,6 @@ public class MpvWrapper : MonoBehaviour
 
         mpv_command_string(mpvHandle, $"loadfile {videoPath}");
         
-        QualitySettings.vSyncCount = 0; // VSync kikapcsolása
-        Application.targetFrameRate = 90; // Magasabb limit, hogy ne ezen múljon
     }
 
     void Update()

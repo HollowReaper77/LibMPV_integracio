@@ -804,7 +804,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f6f2ba6c29b87216a9ddf93f9d51a4c2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VideoDebugger
-  targetFPS: 120
+  targetFPS: 30
   updateInterval: 1
   fontSize: 35
 --- !u!4 &1804548077
