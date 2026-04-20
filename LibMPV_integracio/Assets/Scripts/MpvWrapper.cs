@@ -31,7 +31,7 @@ public class MpvWrapper : MonoBehaviour
 
     [Header("Beállítások")]
     public RawImage videoScreen; 
-    public string videoPath = "/home/hollowreaper/Letöltések/welcome.mp4";
+    public string videoPath = "/godzie/assets/default/welcome.mp4";
 
     private const int VideoWidth = 3840;
     private const int VideoHeight = 2160;
@@ -66,6 +66,9 @@ public class MpvWrapper : MonoBehaviour
         Marshal.FreeHGlobal(apiTypePtr);
 
         mpv_command_string(mpvHandle, $"loadfile {videoPath}");
+        
+        QualitySettings.vSyncCount = 0; // VSync kikapcsolása
+        Application.targetFrameRate = 90; // Magasabb limit, hogy ne ezen múljon
     }
 
     void Update()

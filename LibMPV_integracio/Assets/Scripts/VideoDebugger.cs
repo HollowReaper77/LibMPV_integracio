@@ -10,7 +10,7 @@ public class VideoDebugger : MonoBehaviour
     
     [Header("Teljesítmény beállítások")]
     [Tooltip("Ide írd be a maximális FPS korlátot (pl. 30 vagy 60)")]
-    public int targetFPS = 30;
+    public int targetFPS = 120;
 
     [Header("Megjelenítési beállítások")]
     public float updateInterval = 1.0f; 
