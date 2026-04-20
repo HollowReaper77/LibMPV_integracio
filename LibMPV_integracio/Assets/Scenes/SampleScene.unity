@@ -155,7 +155,7 @@ Camera:
   m_GameObject: {fileID: 330585543}
   m_Enabled: 1
   serializedVersion: 2
-  m_ClearFlags: 1
+  m_ClearFlags: 2
   m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
@@ -394,7 +394,7 @@ GameObject:
   - component: {fileID: 495970058}
   - component: {fileID: 495970057}
   m_Layer: 0
-  m_Name: Debug
+  m_Name: Performance Tracker
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -679,7 +679,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 27576f6df54f0846da3b5c2813eb5f00, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MpvWrapper
-  videoScreen: {fileID: 0}
+  videoScreen: {fileID: 653455897}
+  videoPath: "/home/hollowreaper/Let\xF6lt\xE9sek/welcome.mp4"
 --- !u!4 &1106665640
 Transform:
   m_ObjectHideFlags: 0
