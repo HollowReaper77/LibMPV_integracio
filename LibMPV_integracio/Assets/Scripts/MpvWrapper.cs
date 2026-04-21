@@ -20,12 +20,14 @@ public class MpvWrapper : MonoBehaviour
     private static extern int mpv_set_option_string(IntPtr ctx, [MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.LPUTF8Str)] string data);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int mpv_command_string(IntPtr ctx, [MarshalAs(UnmanagedType.LPUTF8Str)] string args);
+    
+    // IL2CPP JAVÍTÁS: IntPtr a tömbök helyett
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_render_context_create(out IntPtr res, IntPtr mpv, mpv_render_param[] param);
+    private static extern int mpv_render_context_create(out IntPtr res, IntPtr mpv, IntPtr param);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int mpv_render_context_update(IntPtr ctx);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_render_context_render(IntPtr ctx, mpv_render_param[] param);
+    private static extern int mpv_render_context_render(IntPtr ctx, IntPtr param);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void mpv_render_context_free(IntPtr ctx);
 
@@ -40,14 +42,11 @@ public class MpvWrapper : MonoBehaviour
     private IntPtr renderContext;
     private byte[] frameBuffer;
 
-    // OPTIMALIZÁCIÓ: Előre lefoglalt mutatók a 60 FPS-hez
-    private IntPtr sizePtr;
-    private IntPtr formatPtr;
-    private IntPtr stridePtr;
+    private GCHandle bufferHandle;
+    private IntPtr sizePtr, formatPtr, stridePtr, renderParamsPtr;
 
     void Start()
     {
-        // JAVÍTÁS 1: Unity sebesség kényszerítése
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = 60;
 
@@ -55,35 +54,60 @@ public class MpvWrapper : MonoBehaviour
         if (mpvHandle == IntPtr.Zero) return;
 
         mpv_set_option_string(mpvHandle, "vo", "libmpv");
-        
-        // JAVÍTÁS 2: Fekete képernyő megszüntetése (Vulkan + Memória visszamásolás)
         mpv_set_option_string(mpvHandle, "hwdec", "vulkan-copy"); 
         
         mpv_initialize(mpvHandle);
         
-        videoTexture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.RGB24, false);
-        frameBuffer = new byte[VideoWidth * VideoHeight * 3];
+        // JAVÍTÁS 1: Textúra RGBA32 formátumban (4 bájt / pixel)
+        videoTexture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.RGBA32, false);
+        
+        // JAVÍTÁS 2: Buffer mérete 4-es szorzóval
+        frameBuffer = new byte[VideoWidth * VideoHeight * 4];
         
         if (videoScreen != null) videoScreen.texture = videoTexture;
 
-        // JAVÍTÁS 3: Memória lefoglalása csak EGYSZER, a Start-ban
+        bufferHandle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
+        IntPtr bufferPtr = bufferHandle.AddrOfPinnedObject();
+
         sizePtr = Marshal.AllocHGlobal(8); 
         Marshal.Copy(new int[] { VideoWidth, VideoHeight }, 0, sizePtr, 2);
-        formatPtr = Marshal.StringToHGlobalAnsi("rgb24");
+        
+        // JAVÍTÁS 3: Az mpv formátuma rgba-ra állítva
+        formatPtr = Marshal.StringToHGlobalAnsi("rgba");
+        
         stridePtr = Marshal.AllocHGlobal(IntPtr.Size); 
-        Marshal.WriteIntPtr(stridePtr, (IntPtr)(VideoWidth * 3));
+        
+        // JAVÍTÁS 4: Sorhossz (stride) 4-es szorzóval
+        Marshal.WriteIntPtr(stridePtr, (IntPtr)(VideoWidth * 4));
 
+        int paramSize = Marshal.SizeOf<mpv_render_param>();
+
+        // IL2CPP JAVÍTÁS: Create paraméterek kézi másolása
         IntPtr apiTypePtr = Marshal.StringToHGlobalAnsi("sw");
-        mpv_render_param[] createParams = new mpv_render_param[] {
-            new mpv_render_param { type = 1, data = apiTypePtr },
-            new mpv_render_param { type = 0, data = IntPtr.Zero }
-        };
-        mpv_render_context_create(out renderContext, mpvHandle, createParams);
+        IntPtr createParamsPtr = Marshal.AllocHGlobal(paramSize * 2);
+        Marshal.StructureToPtr(new mpv_render_param { type = 1, data = apiTypePtr }, createParamsPtr, false);
+        Marshal.StructureToPtr(new mpv_render_param { type = 0, data = IntPtr.Zero }, new IntPtr(createParamsPtr.ToInt64() + paramSize), false);
+
+        mpv_render_context_create(out renderContext, mpvHandle, createParamsPtr);
+        
+        Marshal.FreeHGlobal(createParamsPtr);
         Marshal.FreeHGlobal(apiTypePtr);
 
-        // --- ÚJ BEÁLLÍTÁS: VÉGTELENÍTÉS ---
-        mpv_command_string(mpvHandle, "set loop-file yes");
+        // IL2CPP JAVÍTÁS: Render paraméterek előre lefoglalása a gyorsabb Update-hez
+        renderParamsPtr = Marshal.AllocHGlobal(paramSize * 5);
+        mpv_render_param[] rParams = new mpv_render_param[] {
+            new mpv_render_param { type = 17, data = sizePtr },
+            new mpv_render_param { type = 18, data = formatPtr },
+            new mpv_render_param { type = 19, data = stridePtr },
+            new mpv_render_param { type = 20, data = bufferPtr },
+            new mpv_render_param { type = 0, data = IntPtr.Zero }
+        };
+        for (int i = 0; i < 5; i++)
+        {
+            Marshal.StructureToPtr(rParams[i], new IntPtr(renderParamsPtr.ToInt64() + (i * paramSize)), false);
+        }
 
+        mpv_command_string(mpvHandle, "set loop-file yes");
         mpv_command_string(mpvHandle, $"loadfile {videoPath}");
     }
 
@@ -93,30 +117,10 @@ public class MpvWrapper : MonoBehaviour
 
         if (mpv_render_context_update(renderContext) != 0)
         {
-            UpdateVideoTexture();
-        }
-    }
-
-    private void UpdateVideoTexture()
-    {
-        GCHandle bufferHandle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
-        IntPtr bufferPtr = bufferHandle.AddrOfPinnedObject();
-
-        try {
-            mpv_render_param[] renderParams = new mpv_render_param[] {
-                new mpv_render_param { type = 17, data = sizePtr },
-                new mpv_render_param { type = 18, data = formatPtr },
-                new mpv_render_param { type = 19, data = stridePtr },
-                new mpv_render_param { type = 20, data = bufferPtr },
-                new mpv_render_param { type = 0, data = IntPtr.Zero }
-            };
-            mpv_render_context_render(renderContext, renderParams);
-            
+            // Nulla memóriafoglalás az Update-ben
+            mpv_render_context_render(renderContext, renderParamsPtr);
             videoTexture.LoadRawTextureData(frameBuffer);
             videoTexture.Apply();
-        } finally {
-            bufferHandle.Free();
-            // Itt kivettük a FreeHGlobal parancsokat, mert azokat most az OnDestroy kezeli!
         }
     }
 
@@ -125,9 +129,10 @@ public class MpvWrapper : MonoBehaviour
         if (renderContext != IntPtr.Zero) mpv_render_context_free(renderContext);
         if (mpvHandle != IntPtr.Zero) mpv_terminate_destroy(mpvHandle);
 
-        // Memóriaszemét eltakarítása a kilépéskor
+        if (bufferHandle.IsAllocated) bufferHandle.Free();
         if (sizePtr != IntPtr.Zero) Marshal.FreeHGlobal(sizePtr);
         if (formatPtr != IntPtr.Zero) Marshal.FreeHGlobal(formatPtr);
         if (stridePtr != IntPtr.Zero) Marshal.FreeHGlobal(stridePtr);
+        if (renderParamsPtr != IntPtr.Zero) Marshal.FreeHGlobal(renderParamsPtr);
     }
 }
