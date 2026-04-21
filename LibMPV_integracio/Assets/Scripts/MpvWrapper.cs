@@ -40,22 +40,38 @@ public class MpvWrapper : MonoBehaviour
     private IntPtr renderContext;
     private byte[] frameBuffer;
 
+    // OPTIMALIZÁCIÓ: Előre lefoglalt mutatók a 60 FPS-hez
+    private IntPtr sizePtr;
+    private IntPtr formatPtr;
+    private IntPtr stridePtr;
+
     void Start()
     {
+        // JAVÍTÁS 1: Unity sebesség kényszerítése
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = 60;
+
         mpvHandle = mpv_create();
         if (mpvHandle == IntPtr.Zero) return;
 
         mpv_set_option_string(mpvHandle, "vo", "libmpv");
-        mpv_set_option_string(mpvHandle, "hwdec", "auto"); 
+
+        // JAVÍTÁS 2: Fekete képernyő megszüntetése (Vulkan + Memória visszamásolás)
+        mpv_set_option_string(mpvHandle, "hwdec", "vaapi-copy"); 
+        
         mpv_initialize(mpvHandle);
         
-        // JAVÍTÁS: RGB24 formátum (nincs Alpha csatorna, nincs átlátszóság)
         videoTexture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.RGB24, false);
-        
-        // JAVÍTÁS: A buffer mérete most már csak 3 bájt pixelenként (R+G+B)
         frameBuffer = new byte[VideoWidth * VideoHeight * 3];
         
         if (videoScreen != null) videoScreen.texture = videoTexture;
+
+        // JAVÍTÁS 3: Memória lefoglalása csak EGYSZER, a Start-ban
+        sizePtr = Marshal.AllocHGlobal(8); 
+        Marshal.Copy(new int[] { VideoWidth, VideoHeight }, 0, sizePtr, 2);
+        formatPtr = Marshal.StringToHGlobalAnsi("rgb24");
+        stridePtr = Marshal.AllocHGlobal(IntPtr.Size); 
+        Marshal.WriteIntPtr(stridePtr, (IntPtr)(VideoWidth * 3));
 
         IntPtr apiTypePtr = Marshal.StringToHGlobalAnsi("sw");
         mpv_render_param[] createParams = new mpv_render_param[] {
@@ -66,7 +82,6 @@ public class MpvWrapper : MonoBehaviour
         Marshal.FreeHGlobal(apiTypePtr);
 
         mpv_command_string(mpvHandle, $"loadfile {videoPath}");
-        
     }
 
     void Update()
@@ -84,16 +99,6 @@ public class MpvWrapper : MonoBehaviour
         GCHandle bufferHandle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
         IntPtr bufferPtr = bufferHandle.AddrOfPinnedObject();
 
-        IntPtr sizePtr = Marshal.AllocHGlobal(8); 
-        Marshal.Copy(new int[] { VideoWidth, VideoHeight }, 0, sizePtr, 2);
-        
-        // JAVÍTÁS: rgb24 formátumot kérünk az mpv-től is
-        IntPtr formatPtr = Marshal.StringToHGlobalAnsi("rgb24");
-        
-        // JAVÍTÁS: A stride (sorszélesség) is szélesség * 3 bájt
-        IntPtr stridePtr = Marshal.AllocHGlobal(IntPtr.Size); 
-        Marshal.WriteIntPtr(stridePtr, (IntPtr)(VideoWidth * 3));
-
         try {
             mpv_render_param[] renderParams = new mpv_render_param[] {
                 new mpv_render_param { type = 17, data = sizePtr },
@@ -108,9 +113,7 @@ public class MpvWrapper : MonoBehaviour
             videoTexture.Apply();
         } finally {
             bufferHandle.Free();
-            Marshal.FreeHGlobal(sizePtr); 
-            Marshal.FreeHGlobal(formatPtr); 
-            Marshal.FreeHGlobal(stridePtr);
+            // Itt kivettük a FreeHGlobal parancsokat, mert azokat most az OnDestroy kezeli!
         }
     }
 
@@ -118,5 +121,10 @@ public class MpvWrapper : MonoBehaviour
     {
         if (renderContext != IntPtr.Zero) mpv_render_context_free(renderContext);
         if (mpvHandle != IntPtr.Zero) mpv_terminate_destroy(mpvHandle);
+
+        // Memóriaszemét eltakarítása a kilépéskor
+        if (sizePtr != IntPtr.Zero) Marshal.FreeHGlobal(sizePtr);
+        if (formatPtr != IntPtr.Zero) Marshal.FreeHGlobal(formatPtr);
+        if (stridePtr != IntPtr.Zero) Marshal.FreeHGlobal(stridePtr);
     }
 }
