@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.UI;
 
-public class MpvWrapper : MonoBehaviour
+public class MpvManager : MonoBehaviour
 {
     private const string MpvLibName = "libmpv.so.2";
 
@@ -21,110 +21,146 @@ public class MpvWrapper : MonoBehaviour
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int mpv_command_string(IntPtr ctx, [MarshalAs(UnmanagedType.LPUTF8Str)] string args);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_render_context_create(out IntPtr res, IntPtr mpv, mpv_render_param[] param);
+    private static extern int mpv_render_context_create(out IntPtr res, IntPtr mpv, IntPtr param);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int mpv_render_context_update(IntPtr ctx);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int mpv_render_context_render(IntPtr ctx, mpv_render_param[] param);
+    private static extern int mpv_render_context_render(IntPtr ctx, IntPtr param);
     [DllImport(MpvLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void mpv_render_context_free(IntPtr ctx);
 
-    [Header("Beállítások")]
-    public RawImage videoScreen; 
-    public string videoPath = "/godzie/assets/default/backgrounds/welcome.mp4";
+    [Header("Maximum 3 Videó Slot")]
+    public RawImage[] videoScreens = new RawImage[3];
+    
+    // BEÉGETETT ÚTVONALAK MINDHÁROM SLOTHOZ
+    public string[] videoPaths = new string[3] 
+    { 
+        "/godzie/assets/default/backgrounds/welcome.mp4", 
+        "/godzie/assets/default/backgrounds/welcome.mp4", 
+        "/godzie/assets/default/backgrounds/welcome.mp4" 
+    };
 
     private const int VideoWidth = 3840;
     private const int VideoHeight = 2160;
-    private Texture2D videoTexture;
-    private IntPtr mpvHandle;
-    private IntPtr renderContext;
-    private byte[] frameBuffer;
 
-    // OPTIMALIZÁCIÓ: Előre lefoglalt mutatók a 60 FPS-hez
-    private IntPtr sizePtr;
-    private IntPtr formatPtr;
-    private IntPtr stridePtr;
+    private class MpvStream
+    {
+        public bool isInitialized = false;
+        public IntPtr handle;
+        public IntPtr renderContext;
+        public Texture2D texture;
+        public byte[] frameBuffer;
+        public GCHandle bufferHandle;
+        public IntPtr sizePtr, formatPtr, stridePtr, apiTypePtr;
+        public IntPtr createParamsPtr, renderParamsPtr;
+    }
+
+    private MpvStream[] streams = new MpvStream[3];
 
     void Start()
     {
-        // JAVÍTÁS 1: Unity sebesség kényszerítése
-        QualitySettings.vSyncCount = 0;
-        Application.targetFrameRate = 60;
+        if (Application.targetFrameRate != 60) {
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = 60;
+        }
 
-        mpvHandle = mpv_create();
-        if (mpvHandle == IntPtr.Zero) return;
+        int paramSize = Marshal.SizeOf<mpv_render_param>();
 
-        mpv_set_option_string(mpvHandle, "vo", "libmpv");
+        for (int i = 0; i < 3; i++)
+        {
+            streams[i] = new MpvStream();
+            MpvStream s = streams[i];
 
-        // JAVÍTÁS 2: Fekete képernyő megszüntetése (Vulkan + Memória visszamásolás)
-        mpv_set_option_string(mpvHandle, "hwdec", "vaapi-copy"); 
-        
-        mpv_initialize(mpvHandle);
-        
-        videoTexture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.RGB24, false);
-        frameBuffer = new byte[VideoWidth * VideoHeight * 3];
-        
-        if (videoScreen != null) videoScreen.texture = videoTexture;
+            if (string.IsNullOrEmpty(videoPaths[i])) 
+            {
+                if (videoScreens[i] != null) videoScreens[i].gameObject.SetActive(false);
+                continue;
+            }
 
-        // JAVÍTÁS 3: Memória lefoglalása csak EGYSZER, a Start-ban
-        sizePtr = Marshal.AllocHGlobal(8); 
-        Marshal.Copy(new int[] { VideoWidth, VideoHeight }, 0, sizePtr, 2);
-        formatPtr = Marshal.StringToHGlobalAnsi("rgb24");
-        stridePtr = Marshal.AllocHGlobal(IntPtr.Size); 
-        Marshal.WriteIntPtr(stridePtr, (IntPtr)(VideoWidth * 3));
+            if (videoScreens[i] != null) videoScreens[i].gameObject.SetActive(true);
 
-        IntPtr apiTypePtr = Marshal.StringToHGlobalAnsi("sw");
-        mpv_render_param[] createParams = new mpv_render_param[] {
-            new mpv_render_param { type = 1, data = apiTypePtr },
-            new mpv_render_param { type = 0, data = IntPtr.Zero }
-        };
-        mpv_render_context_create(out renderContext, mpvHandle, createParams);
-        Marshal.FreeHGlobal(apiTypePtr);
+            s.handle = mpv_create();
+            if (s.handle == IntPtr.Zero) continue;
 
-        mpv_command_string(mpvHandle, $"loadfile {videoPath}");
+            mpv_set_option_string(s.handle, "vo", "libmpv");
+            mpv_set_option_string(s.handle, "gpu-api", "opengl");
+            mpv_set_option_string(s.handle, "hwdec", "vaapi-copy");
+
+            mpv_initialize(s.handle);
+
+            s.texture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.RGB24, false);
+            s.frameBuffer = new byte[VideoWidth * VideoHeight * 3];
+            videoScreens[i].texture = s.texture;
+
+            s.bufferHandle = GCHandle.Alloc(s.frameBuffer, GCHandleType.Pinned);
+            IntPtr bufferPtr = s.bufferHandle.AddrOfPinnedObject();
+
+            s.sizePtr = Marshal.AllocHGlobal(8);
+            Marshal.Copy(new int[] { VideoWidth, VideoHeight }, 0, s.sizePtr, 2);
+            s.formatPtr = Marshal.StringToHGlobalAnsi("rgb24");
+            s.stridePtr = Marshal.AllocHGlobal(IntPtr.Size);
+            Marshal.WriteIntPtr(s.stridePtr, (IntPtr)(VideoWidth * 3));
+            s.apiTypePtr = Marshal.StringToHGlobalAnsi("sw");
+
+            mpv_render_param[] cParams = new mpv_render_param[] {
+                new mpv_render_param { type = 1, data = s.apiTypePtr },
+                new mpv_render_param { type = 0, data = IntPtr.Zero }
+            };
+            s.createParamsPtr = Marshal.AllocHGlobal(paramSize * 2);
+            for (int j = 0; j < 2; j++) Marshal.StructureToPtr(cParams[j], new IntPtr(s.createParamsPtr.ToInt64() + (j * paramSize)), false);
+
+            mpv_render_context_create(out s.renderContext, s.handle, s.createParamsPtr);
+
+            mpv_render_param[] rParams = new mpv_render_param[] {
+                new mpv_render_param { type = 17, data = s.sizePtr },
+                new mpv_render_param { type = 18, data = s.formatPtr },
+                new mpv_render_param { type = 19, data = s.stridePtr },
+                new mpv_render_param { type = 20, data = bufferPtr },
+                new mpv_render_param { type = 0, data = IntPtr.Zero }
+            };
+            s.renderParamsPtr = Marshal.AllocHGlobal(paramSize * 5);
+            for (int j = 0; j < 5; j++) Marshal.StructureToPtr(rParams[j], new IntPtr(s.renderParamsPtr.ToInt64() + (j * paramSize)), false);
+
+            mpv_command_string(s.handle, "set loop-file yes");
+            mpv_command_string(s.handle, $"loadfile {videoPaths[i]}");
+
+            s.isInitialized = true;
+        }
     }
 
     void Update()
     {
-        if (mpvHandle == IntPtr.Zero || renderContext == IntPtr.Zero) return;
-
-        if (mpv_render_context_update(renderContext) != 0)
+        for (int i = 0; i < 3; i++)
         {
-            UpdateVideoTexture();
-        }
-    }
+            MpvStream s = streams[i];
+            if (!s.isInitialized || s.handle == IntPtr.Zero || s.renderContext == IntPtr.Zero) continue;
 
-    private void UpdateVideoTexture()
-    {
-        GCHandle bufferHandle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
-        IntPtr bufferPtr = bufferHandle.AddrOfPinnedObject();
-
-        try {
-            mpv_render_param[] renderParams = new mpv_render_param[] {
-                new mpv_render_param { type = 17, data = sizePtr },
-                new mpv_render_param { type = 18, data = formatPtr },
-                new mpv_render_param { type = 19, data = stridePtr },
-                new mpv_render_param { type = 20, data = bufferPtr },
-                new mpv_render_param { type = 0, data = IntPtr.Zero }
-            };
-            mpv_render_context_render(renderContext, renderParams);
-            
-            videoTexture.LoadRawTextureData(frameBuffer);
-            videoTexture.Apply();
-        } finally {
-            bufferHandle.Free();
-            // Itt kivettük a FreeHGlobal parancsokat, mert azokat most az OnDestroy kezeli!
+            if (mpv_render_context_update(s.renderContext) != 0)
+            {
+                mpv_render_context_render(s.renderContext, s.renderParamsPtr);
+                s.texture.LoadRawTextureData(s.frameBuffer);
+                s.texture.Apply();
+            }
         }
     }
 
     void OnDestroy()
     {
-        if (renderContext != IntPtr.Zero) mpv_render_context_free(renderContext);
-        if (mpvHandle != IntPtr.Zero) mpv_terminate_destroy(mpvHandle);
+        for (int i = 0; i < 3; i++)
+        {
+            MpvStream s = streams[i];
+            if (!s.isInitialized) continue;
 
-        // Memóriaszemét eltakarítása a kilépéskor
-        if (sizePtr != IntPtr.Zero) Marshal.FreeHGlobal(sizePtr);
-        if (formatPtr != IntPtr.Zero) Marshal.FreeHGlobal(formatPtr);
-        if (stridePtr != IntPtr.Zero) Marshal.FreeHGlobal(stridePtr);
+            if (s.renderContext != IntPtr.Zero) mpv_render_context_free(s.renderContext);
+            if (s.handle != IntPtr.Zero) mpv_terminate_destroy(s.handle);
+
+            if (s.bufferHandle.IsAllocated) s.bufferHandle.Free();
+            if (s.sizePtr != IntPtr.Zero) Marshal.FreeHGlobal(s.sizePtr);
+            if (s.formatPtr != IntPtr.Zero) Marshal.FreeHGlobal(s.formatPtr);
+            if (s.stridePtr != IntPtr.Zero) Marshal.FreeHGlobal(s.stridePtr);
+            if (s.apiTypePtr != IntPtr.Zero) Marshal.FreeHGlobal(s.apiTypePtr);
+            if (s.createParamsPtr != IntPtr.Zero) Marshal.FreeHGlobal(s.createParamsPtr);
+            if (s.renderParamsPtr != IntPtr.Zero) Marshal.FreeHGlobal(s.renderParamsPtr);
+        }
     }
 }
