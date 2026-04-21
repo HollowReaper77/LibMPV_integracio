@@ -81,6 +81,9 @@ public class MpvWrapper : MonoBehaviour
         mpv_render_context_create(out renderContext, mpvHandle, createParams);
         Marshal.FreeHGlobal(apiTypePtr);
 
+        // --- ÚJ BEÁLLÍTÁS: VÉGTELENÍTÉS ---
+        mpv_command_string(mpvHandle, "set loop-file yes");
+
         mpv_command_string(mpvHandle, $"loadfile {videoPath}");
     }
 
