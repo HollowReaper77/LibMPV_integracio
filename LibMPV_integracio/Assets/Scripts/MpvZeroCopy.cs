@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.UI;
@@ -57,8 +56,6 @@ public class MpvZeroCopy : MonoBehaviour
     private static extern void glFramebufferTexture2D(int target, int attachment, int textarget, int texture, int level);
     [DllImport(GlLibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void glDeleteFramebuffers(int n, ref int framebuffers);
-    [DllImport(GlLibName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int glGetError(); // OpenGL hiba ellenőrző
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate IntPtr GetProcAddressDelegate(IntPtr ctx, [MarshalAs(UnmanagedType.LPStr)] string name);
@@ -75,131 +72,91 @@ public class MpvZeroCopy : MonoBehaviour
     private const int VideoWidth = 3840;
     private const int VideoHeight = 2160;
     
-    private Texture2D videoTexture;
+    private RenderTexture videoTexture;
     private IntPtr mpvHandle, renderContext;
     private int glFboId;
     private IntPtr renderParamsPtr;
     private GetProcAddressDelegate glDelegate;
-    private bool isFirstFrameRendered = false;
 
     void Start()
     {
-        Debug.Log("<b>[MPV DEBUG]</b> Csatlakozás megkezdése...");
-
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = 60;
 
-        try
-        {
-            // 1. Textúra lekérése
-            videoTexture = new Texture2D(VideoWidth, VideoHeight, TextureFormat.RGBA32, false);
-            videoTexture.Apply(false, true);
-            if (videoScreen != null) videoScreen.texture = videoTexture;
+        // SZÍNEK JAVÍTÁSA: RenderTextureReadWrite.Linear kikapcsolja a Unity túlexponálását
+        videoTexture = new RenderTexture(VideoWidth, VideoHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        videoTexture.Create();
+        if (videoScreen != null) videoScreen.texture = videoTexture;
 
-            int glTextureId = (int)videoTexture.GetNativeTexturePtr();
-            Debug.Log($"<b>[MPV DEBUG]</b> Unity Textúra ID: {glTextureId}");
-            if (glTextureId == 0) Debug.LogError("<b>[MPV HIBA]</b> A Unity nem adott OpenGL textúra azonosítót! Lehet, hogy a build nem OpenGL módban fut?");
+        int glTextureId = (int)videoTexture.GetNativeTexturePtr();
+        
+        glGenFramebuffers(1, out glFboId);
+        glBindFramebuffer(0x8D40, glFboId);
+        glFramebufferTexture2D(0x8D40, 0x8CE0, 0x0DE1, glTextureId, 0);
+        glBindFramebuffer(0x8D40, 0);
 
-            // 2. FBO Létrehozása
-            glGenFramebuffers(1, out glFboId);
-            Debug.Log($"<b>[MPV DEBUG]</b> OpenGL FBO generálva, ID: {glFboId}");
-            
-            glBindFramebuffer(0x8D40, glFboId);
-            glFramebufferTexture2D(0x8D40, 0x8CE0, 0x0DE1, glTextureId, 0);
-            
-            int glErr = glGetError();
-            if (glErr != 0) Debug.LogError($"<b>[MPV HIBA]</b> OpenGL Hiba a Framebuffer kötésnél! Kód: {glErr}");
-            
-            glBindFramebuffer(0x8D40, 0);
+        mpvHandle = mpv_create();
+        if (mpvHandle == IntPtr.Zero) return;
+        
+        mpv_set_option_string(mpvHandle, "vo", "libmpv");
+        mpv_set_option_string(mpvHandle, "hwdec", "vaapi");
+        mpv_initialize(mpvHandle);
 
-            // 3. MPV Inicializálás
-            mpvHandle = mpv_create();
-            if (mpvHandle == IntPtr.Zero) Debug.LogError("<b>[MPV HIBA]</b> mpv_create() sikertelen! Nincs libmpv a memóriában.");
-            
-            mpv_set_option_string(mpvHandle, "vo", "libmpv");
-            mpv_set_option_string(mpvHandle, "hwdec", "vaapi");
-            
-            int initRes = mpv_initialize(mpvHandle);
-            Debug.Log($"<b>[MPV DEBUG]</b> mpv_initialize eredmény (0 a jó): {initRes}");
-            if (initRes < 0) Debug.LogError("<b>[MPV HIBA]</b> A libmpv inicializálása elbukott!");
+        glDelegate = new GetProcAddressDelegate(GetProcAddress);
+        mpv_opengl_init_params glInitParams = new mpv_opengl_init_params {
+            get_proc_address = Marshal.GetFunctionPointerForDelegate(glDelegate),
+            get_proc_address_ctx = IntPtr.Zero
+        };
 
-            // 4. OpenGL Környezet átadása
-            glDelegate = new GetProcAddressDelegate(GetProcAddress);
-            mpv_opengl_init_params glInitParams = new mpv_opengl_init_params {
-                get_proc_address = Marshal.GetFunctionPointerForDelegate(glDelegate),
-                get_proc_address_ctx = IntPtr.Zero
-            };
+        IntPtr glInitPtr = Marshal.AllocHGlobal(Marshal.SizeOf<mpv_opengl_init_params>());
+        Marshal.StructureToPtr(glInitParams, glInitPtr, false);
 
-            IntPtr glInitPtr = Marshal.AllocHGlobal(Marshal.SizeOf<mpv_opengl_init_params>());
-            Marshal.StructureToPtr(glInitParams, glInitPtr, false);
+        int paramSize = Marshal.SizeOf<mpv_render_param>();
+        IntPtr apiTypePtr = Marshal.StringToHGlobalAnsi("opengl");
+        
+        IntPtr createParamsPtr = Marshal.AllocHGlobal(paramSize * 3);
+        Marshal.StructureToPtr(new mpv_render_param { type = 1, data = apiTypePtr }, createParamsPtr, false);
+        Marshal.StructureToPtr(new mpv_render_param { type = 2, data = glInitPtr }, new IntPtr(createParamsPtr.ToInt64() + paramSize), false);
+        Marshal.StructureToPtr(new mpv_render_param { type = 0, data = IntPtr.Zero }, new IntPtr(createParamsPtr.ToInt64() + (paramSize * 2)), false);
 
-            int paramSize = Marshal.SizeOf<mpv_render_param>();
-            IntPtr apiTypePtr = Marshal.StringToHGlobalAnsi("opengl");
-            
-            IntPtr createParamsPtr = Marshal.AllocHGlobal(paramSize * 3);
-            Marshal.StructureToPtr(new mpv_render_param { type = 1, data = apiTypePtr }, createParamsPtr, false);
-            Marshal.StructureToPtr(new mpv_render_param { type = 2, data = glInitPtr }, new IntPtr(createParamsPtr.ToInt64() + paramSize), false);
-            Marshal.StructureToPtr(new mpv_render_param { type = 0, data = IntPtr.Zero }, new IntPtr(createParamsPtr.ToInt64() + (paramSize * 2)), false);
+        mpv_render_context_create(out renderContext, mpvHandle, createParamsPtr);
 
-            int ctxRes = mpv_render_context_create(out renderContext, mpvHandle, createParamsPtr);
-            Debug.Log($"<b>[MPV DEBUG]</b> Render Context Létrehozva (0 a jó): {ctxRes}");
-            if (ctxRes < 0) Debug.LogError("<b>[MPV HIBA]</b> mpv_render_context_create sikertelen! Az OpenGL kontextus nem kompatibilis.");
+        Marshal.FreeHGlobal(createParamsPtr);
+        Marshal.FreeHGlobal(apiTypePtr);
+        Marshal.FreeHGlobal(glInitPtr);
 
-            Marshal.FreeHGlobal(createParamsPtr);
-            Marshal.FreeHGlobal(apiTypePtr);
-            Marshal.FreeHGlobal(glInitPtr);
+        mpv_opengl_fbo fboParam = new mpv_opengl_fbo {
+            fbo = glFboId,
+            w = VideoWidth,
+            h = VideoHeight,
+            internal_format = 32856 // GL_RGBA8
+        };
+        IntPtr fboPtr = Marshal.AllocHGlobal(Marshal.SizeOf<mpv_opengl_fbo>());
+        Marshal.StructureToPtr(fboParam, fboPtr, false);
 
-            // 5. FBO Paraméterek
-            mpv_opengl_fbo fboParam = new mpv_opengl_fbo {
-                fbo = glFboId,
-                w = VideoWidth,
-                h = VideoHeight,
-                internal_format = 32856 // GL_RGBA8
-            };
-            IntPtr fboPtr = Marshal.AllocHGlobal(Marshal.SizeOf<mpv_opengl_fbo>());
-            Marshal.StructureToPtr(fboParam, fboPtr, false);
+        renderParamsPtr = Marshal.AllocHGlobal(paramSize * 2);
+        Marshal.StructureToPtr(new mpv_render_param { type = 3, data = fboPtr }, renderParamsPtr, false);
+        Marshal.StructureToPtr(new mpv_render_param { type = 0, data = IntPtr.Zero }, new IntPtr(renderParamsPtr.ToInt64() + paramSize), false);
 
-            renderParamsPtr = Marshal.AllocHGlobal(paramSize * 2);
-            Marshal.StructureToPtr(new mpv_render_param { type = 3, data = fboPtr }, renderParamsPtr, false);
-            Marshal.StructureToPtr(new mpv_render_param { type = 0, data = IntPtr.Zero }, new IntPtr(renderParamsPtr.ToInt64() + paramSize), false);
-
-            // 6. Indítás
-            mpv_command_string(mpvHandle, "set loop-file yes");
-            int loadRes = mpv_command_string(mpvHandle, $"loadfile {videoPath}");
-            Debug.Log($"<b>[MPV DEBUG]</b> loadfile parancs eredménye (0 a jó): {loadRes} | Útvonal: {videoPath}");
-
-            StartCoroutine(RenderLoop());
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"<b>[MPV KRITIKUS HIBA]</b> Kivétel történt a Start-ban: {e.Message}\n{e.StackTrace}");
-        }
+        // LEJÁTSZÁS KÉNYSZERÍTÉSE:
+        mpv_command_string(mpvHandle, "set loop-file yes");
+        mpv_command_string(mpvHandle, "set pause no"); // Biztosítjuk, hogy ne fagyjon be az első képkockán!
+        mpv_command_string(mpvHandle, $"loadfile {videoPath}");
     }
 
-    void Update()
+    // FAGYÁS JAVÍTÁSA: A Coroutine helyett a stabil LateUpdate-et használjuk, ami minden logikai lépés után fixen lefut
+    void LateUpdate()
     {
-        if (videoScreen != null) videoScreen.SetMaterialDirty();
-    }
-
-    IEnumerator RenderLoop()
-    {
-        while (true)
+        if (mpvHandle != IntPtr.Zero && renderContext != IntPtr.Zero)
         {
-            yield return new WaitForEndOfFrame();
-
-            if (mpvHandle != IntPtr.Zero && renderContext != IntPtr.Zero)
+            if (mpv_render_context_update(renderContext) != 0)
             {
-                if (mpv_render_context_update(renderContext) != 0)
+                mpv_render_context_render(renderContext, renderParamsPtr);
+                
+                if (videoScreen != null) 
                 {
-                    mpv_render_context_render(renderContext, renderParamsPtr);
-                    
-                    if (!isFirstFrameRendered)
-                    {
-                        Debug.Log("<b>[MPV DEBUG]</b> SIKER! Az első képkocka megérkezett és a VRAM-ba íródott!");
-                        isFirstFrameRendered = true;
-                    }
-
-                    if (videoScreen != null) videoScreen.SetMaterialDirty(); 
+                    videoScreen.texture = videoTexture;
+                    videoScreen.SetMaterialDirty();
                 }
             }
         }
@@ -207,11 +164,11 @@ public class MpvZeroCopy : MonoBehaviour
 
     void OnDestroy()
     {
-        Debug.Log("<b>[MPV DEBUG]</b> Rendszer leállítása...");
-        StopAllCoroutines();
         if (renderContext != IntPtr.Zero) mpv_render_context_free(renderContext);
         if (mpvHandle != IntPtr.Zero) mpv_terminate_destroy(mpvHandle);
         if (glFboId != 0) glDeleteFramebuffers(1, ref glFboId);
         if (renderParamsPtr != IntPtr.Zero) Marshal.FreeHGlobal(renderParamsPtr);
+        
+        if (videoTexture != null) videoTexture.Release();
     }
 }
