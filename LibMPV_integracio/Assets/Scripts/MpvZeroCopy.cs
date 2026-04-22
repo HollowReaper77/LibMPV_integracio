@@ -149,7 +149,18 @@ public class MpvZeroCopy : MonoBehaviour
         StartCoroutine(RenderLoop());
     }
 
-    // Nincs több Update() függvény! Ehelyett a GPU saját idővonalán (Render Thread) rajzolunk.
+    // JAVÍTÁS 1: A motor ébren tartása
+    void Update()
+    {
+        // Ha van UI elemünk, jelezzük neki minden képkockánál, hogy frissítésre vár.
+        // Ez megakadályozza, hogy a Unity "elaludjon" és egérmozgásra várjon.
+        if (videoScreen != null)
+        {
+            videoScreen.SetMaterialDirty();
+        }
+    }
+
+    // JAVÍTÁS 2: A grafikus megjelenítés kikényszerítése a Coroutine-ban
     IEnumerator RenderLoop()
     {
         while (true)
@@ -163,6 +174,12 @@ public class MpvZeroCopy : MonoBehaviour
                 {
                     // A GPU közvetlenül a videókártya textúrájára rajzol, nulla memóriahatással!
                     mpv_render_context_render(renderContext, renderParamsPtr);
+                    
+                    // Szólunk a motornak, hogy a videó textúrája megváltozott a háta mögött
+                    if (videoScreen != null)
+                    {
+                        videoScreen.SetMaterialDirty(); 
+                    }
                 }
             }
         }
