@@ -1,0 +1,7 @@
+=== MPV ZERO COPY LOG (NATIVE PLUGIN EVENT) ===
+[11:25:35.927] 1. Csatlakozás előkészítése...
+[11:25:35.966] loadfile parancs lefutott, eredmény (0 a jó): 0 | Útvonal: /godzie/assets/default/backgrounds/welcome.mp4
+[11:25:35.967] 2. Kérjük a Unity-t, hogy hívja meg az inicializálást a Render Szálon!
+[11:25:35.972] FBO Generálva a Native Szálon! Státusz: 36053
+[11:25:36.346] Render Context Létrehozva (0 jó): 0
+[11:25:58.981] Rendszer leállítása...
